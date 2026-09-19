@@ -94,9 +94,58 @@ beklemeyle tekrar deneniyor. HTTP 5xx de tekrar denenebilir sayıldı. 4xx
 (429 hariç) hâlâ anında patlıyor — istek bozuk demektir, tekrar denemek aynı
 sonucu verir.
 
-**Hâlâ açık:** Koşu patlarsa kimse haberdar olmuyor. Site bayatladığını ancak
-elle bakınca fark ediyorsun (bu daha önce 4 gün sürmüştü). Bir uyarı
-mekanizması yok — karar verilmedi.
+**Not:** Ağır istekteki asıl sebep ayrıca düzeltildi (aşağıya bak) — retry
+semptomu hafifletiyordu, timeout sebebi kapattı.
+
+### Eşik: `AGIR_ISTEK_TIMEOUT_SEC = 180` (19.09.2026)
+
+`REQUEST_TIMEOUT_SEC = 30` bütün isteklere aynı uygulanıyordu. Tüm fonların
+zaman serisi **tek istekte ~45 bin satır** dönüyor ve 30 saniye bu yanıt için
+dardı: 17.09 sabah, 17.09 akşam ve 18.09 sabah koşularının üçü de tam bu
+istekte (`fonGnlBlgSiraliGetir`) timeout'a girip düştü. Küçük isteklerde
+(`fonTurGetir`) hiç sorun yoktu. Bu yüzden timeout istek başına ayrıldı:
+ağır uç nokta 180sn, geri kalan 30sn.
+
+### Tuzak: rapor takvim gününe bağlıydı, veri gününe değil (19.09.2026)
+
+**Belirti:** İşlem olmayan bir günde (hafta sonu / resmî tatil / akşam yayını
+çıkmadan koşan sabah taraması) skor ve akış geçmişine o günün tarihiyle satır
+yazılıyordu. Değerler bir önceki günden **farklı** çıkıyordu — yeni veri
+geldiği için değil, metrik penceresi bir gün kaydığı için. Sayfa da o güne ait
+veri varmış gibi görünüyordu.
+
+**Sebep:** `main()` içinde `run_date = date.today()`.
+
+**Daha sinsi hâli:** Hafta içi 09:30 koşusu TEFAS'ın akşam yayınından önce
+çalışıyor. Bugünün tarihiyle **dünün verisini** yazıyordu; akşam 20:00'de
+gerçek veri geldiğinde `append_*_gecmis` "bu tarih zaten var" deyip atlıyordu.
+Yani günün doğru verisi hiç kaydedilmiyordu.
+
+**Çözüm:** Veri günü artık serinin kendisinden türetiliyor
+(`veri_tarihi = max(...)`). Veri çekme penceresi bugüne kadar gitmeye devam
+ediyor — orası doğruydu — ama rapor, geçmiş CSV'leri ve sayfa gerçek veri
+gününe bağlanıyor. Takvim günüyle veri günü ayrıştığında koşu bunu log'a
+yazıyor ("TEFAS'ın son veri günü … — rapor … üzerinden yazılıyor").
+
+### Sayfadaki tazelik rozeti (19.09.2026)
+
+**Neden eklendi:** "Veri tarihi: 18.09" ekranda iki ayrı durumda birebir aynı
+görünüyordu — TEFAS'ta daha yenisi yok (normal) ve tarama günlerdir çöküyor
+(kötü). Ayırt etmenin tek yolu `fon_tarama.log`'a bakmaktı, bu da sayfaya
+bakan kişinin işi değil.
+
+Artık "Veri tarihi"nin yanında **güncel** / **N iş günü geride** rozeti, altında
+da **Son kontrol** zaman damgası var. Beklenen son veri günü tarayıcıda
+hesaplanıyor: saat 20'den önceyse dünkü iş günü, sonraysa bugün; hafta sonu
+geriye sarılıyor. **Sınır:** resmî tatiller bilinmiyor, o günlerde rozet
+yanlışlıkla "geride" diyebilir — ipucu metni bunu söylüyor.
+
+**Hâlâ açık:** Koşu patlarsa aktif bir uyarı gitmiyor. Rozet siteye *bakınca*
+fark etmeni sağlıyor ama bakmıyorsan yine sessiz. Karar verilmedi.
+
+**Hâlâ açık:** 17.09.2026 verisi geçmiş CSV'lerde eksik (o gün iki koşu da
+ağ hatasından düştü). TEFAS'ta veri duruyor, sonradan doldurulabilir —
+karar verilmedi.
 
 **`docs/` klasörü hem bu proje hem eski `bist_model_portfoy.py`'nin çıktısını
 barındırıyordu** (`index.html` + `fon.html`/`fon-model-portfoy.html`).
