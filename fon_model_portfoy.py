@@ -118,6 +118,10 @@ def n_ay_once(tarih: date, ay_sayisi: int) -> date:
     return date(yil, ay, min(tarih.day, son_gun))
 
 REQUEST_TIMEOUT_SEC = 30
+# Tum fonlarin zaman serisi tek istekte ~45 bin satir donuyor; 30sn bu yanit
+# icin dar kaliyordu ve 17-18.09.2026'da ard arda uc kosu tam burada timeout'a
+# girip dustu. Kucuk isteklerde 30sn yeterli, sadece agir istek uzun bekliyor.
+AGIR_ISTEK_TIMEOUT_SEC = 180
 REQUEST_HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Content-Type": "application/json",
@@ -142,13 +146,20 @@ GECICI_AG_HATALARI = (
 )
 
 
-def tefas_post(url: str, payload: dict, retries: int = 5):
+def simdi_damgasi() -> str:
+    """Sayfadaki 'Son kontrol' damgasi. Veri tarihinden ayri tutuluyor: veri
+    tarihi TEFAS'in yayinladigi gun, bu ise robotun en son ne zaman bakip
+    sayfayi yazdigi. Hafta sonu ikisi ayrisir ve fark onemlidir."""
+    return datetime.now().strftime("%d.%m.%Y %H:%M")
+
+
+def tefas_post(url: str, payload: dict, retries: int = 5, timeout: int = REQUEST_TIMEOUT_SEC):
     data = json.dumps(payload).encode("utf-8")
     last_err = None
     for attempt in range(1, retries + 1):
         req = urllib.request.Request(url, data=data, headers=REQUEST_HEADERS, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SEC) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             last_err = e
@@ -231,7 +242,7 @@ def fetch_tum_fonlar_zaman_serisi(bas_tarih: date, bit_tarih: date):
         "basTarih": bas_tarih.strftime("%Y%m%d"), "bitTarih": bit_tarih.strftime("%Y%m%d"),
         "basSira": 1, "bitSira": 60000, "fonTurAciklama": None, "dil": "TR", "kurucuKod": None,
     }
-    payload_json = tefas_post(FON_GENEL_URL, payload)
+    payload_json = tefas_post(FON_GENEL_URL, payload, timeout=AGIR_ISTEK_TIMEOUT_SEC)
     rows = payload_json.get("resultList") or []
 
     by_fon = defaultdict(list)
@@ -263,7 +274,7 @@ def fetch_referans_fiyatlar(hedef_tarih: date, pencere_gun: int = REFERANS_PENCE
         "basTarih": hedef_tarih.strftime("%Y%m%d"), "bitTarih": bit_tarih.strftime("%Y%m%d"),
         "basSira": 1, "bitSira": 60000, "fonTurAciklama": None, "dil": "TR", "kurucuKod": None,
     }
-    payload_json = tefas_post(FON_GENEL_URL, payload)
+    payload_json = tefas_post(FON_GENEL_URL, payload, timeout=AGIR_ISTEK_TIMEOUT_SEC)
     rows = payload_json.get("resultList") or []
 
     en_yakin = {}
@@ -1006,6 +1017,12 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
     line-height: 1.5;
   }
   .masthead-meta strong { color: var(--ink); font-weight: 600; }
+  .freshness {
+    display: inline-block; padding: 1px 7px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; vertical-align: 1px;
+  }
+  .freshness.ok { background: var(--tier-strong-bg); color: var(--tier-strong-ink); }
+  .freshness.uyari { background: var(--tier-watch-bg); color: var(--tier-watch-ink); }
 
   .stats {
     display: grid;
@@ -1381,7 +1398,8 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
       <h1>TEFAS by alprgl</h1>
     </div>
     <div class="masthead-meta">
-      Tarama tarihi: <strong id="run-date">—</strong><br>
+      Veri tarihi: <strong id="run-date">—</strong> <span class="freshness" id="freshness"></span><br>
+      Son kontrol: <strong id="run-ts">—</strong><br>
       Kaynak: tefas.gov.tr (Takasbank)
     </div>
   </header>
@@ -1447,8 +1465,42 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
 <script>
   const DATA = __FON_DATA__;
   const RUN_DATE = "__RUN_DATE__";
+  const RUN_TS = "__RUN_TS__";
+
+  // Sayfaya bakan kisi "veri eski mi, yoksa TEFAS'ta yenisi mi yok" ayrimini
+  // yapamiyordu - iki durum ekranda birebir ayni goruntu veriyordu. Rozet bu
+  // soruyu sayfanin kendisinde cevapliyor, log'a bakmaya gerek kalmasin.
+  function gosterTazelik(veriTarihi) {
+    const el = document.getElementById('freshness');
+    if (!el || !veriTarihi) return;
+    // TEFAS gun verisini aksam yayinliyor: saat 20'den once bugunun verisi
+    // henuz cikmamis olur, o yuzden beklenen son veri gunu dunku is gunudur.
+    const beklenen = new Date();
+    if (beklenen.getHours() < 20) beklenen.setDate(beklenen.getDate() - 1);
+    while (beklenen.getDay() === 0 || beklenen.getDay() === 6) {
+      beklenen.setDate(beklenen.getDate() - 1);
+    }
+    beklenen.setHours(0, 0, 0, 0);
+    let gerilik = 0;
+    const imlec = new Date(veriTarihi + "T00:00:00");
+    while (imlec < beklenen) {
+      imlec.setDate(imlec.getDate() + 1);
+      if (imlec.getDay() !== 0 && imlec.getDay() !== 6) gerilik++;
+    }
+    if (gerilik <= 0) {
+      el.className = "freshness ok";
+      el.textContent = "güncel";
+      el.title = "TEFAS'in yayinladigi en yeni islem gunu bu - daha yenisi yok.";
+    } else {
+      el.className = "freshness uyari";
+      el.textContent = gerilik + " is gunu geride";
+      el.title = "Beklenenden eski. Resmi tatil degilse tarama dusmus olabilir.";
+    }
+  }
 
   document.getElementById('run-date').textContent = RUN_DATE;
+  document.getElementById('run-ts').textContent = RUN_TS;
+  gosterTazelik(RUN_DATE);
   document.getElementById('fund-count-footer').textContent = DATA.length + ' fon tarandı';
 
   const FAVORI_ANAHTAR = 'fonModelPortfoy_favoriler';
@@ -1893,7 +1945,9 @@ def write_html_dashboard(rows, run_date_str, output_path: Path):
             "veri_uyarilari": r.get("veri_uyarilari") or [],
         })
     data_json = json.dumps(dashboard_rows, ensure_ascii=False)
-    html = DASHBOARD_TEMPLATE.replace("__FON_DATA__", data_json).replace("__RUN_DATE__", run_date_str)
+    html = (DASHBOARD_TEMPLATE.replace("__FON_DATA__", data_json)
+            .replace("__RUN_DATE__", run_date_str)
+            .replace("__RUN_TS__", simdi_damgasi()))
     output_path.write_text(html, encoding="utf-8")
     print(f"HTML panosu yazildi: {output_path}")
 
@@ -2012,6 +2066,12 @@ PORTFOLIO_TEMPLATE = """<!DOCTYPE html>
   h1 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: clamp(24px, 3vw, 32px); letter-spacing: -0.025em; }
   .masthead-meta { text-align: right; font-size: 12.5px; color: var(--ink-muted); line-height: 1.5; }
   .masthead-meta strong { color: var(--ink); font-weight: 600; }
+  .freshness {
+    display: inline-block; padding: 1px 7px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; vertical-align: 1px;
+  }
+  .freshness.ok { background: var(--tier-strong-bg); color: var(--tier-strong-ink); }
+  .freshness.uyari { background: var(--tier-watch-bg); color: var(--tier-watch-ink); }
 
   .disclaimer {
     display: flex; gap: 10px; align-items: flex-start;
@@ -2102,7 +2162,8 @@ PORTFOLIO_TEMPLATE = """<!DOCTYPE html>
     </div>
     <div class="masthead-meta">
       Son rebalance: <strong id="rebalance-date">—</strong><br>
-      Tarama tarihi: <strong id="run-date">—</strong>
+      Veri tarihi: <strong id="run-date">—</strong> <span class="freshness" id="freshness"></span><br>
+      Son kontrol: <strong id="run-ts">—</strong>
     </div>
   </header>
 
@@ -2142,8 +2203,42 @@ PORTFOLIO_TEMPLATE = """<!DOCTYPE html>
   const HISTORY = __PORTFOLIO_HISTORY__;
   const REBALANCE_DAYS = __REBALANCE_DAYS__;
   const RUN_DATE = "__RUN_DATE__";
+  const RUN_TS = "__RUN_TS__";
+
+  // Sayfaya bakan kisi "veri eski mi, yoksa TEFAS'ta yenisi mi yok" ayrimini
+  // yapamiyordu - iki durum ekranda birebir ayni goruntu veriyordu. Rozet bu
+  // soruyu sayfanin kendisinde cevapliyor, log'a bakmaya gerek kalmasin.
+  function gosterTazelik(veriTarihi) {
+    const el = document.getElementById('freshness');
+    if (!el || !veriTarihi) return;
+    // TEFAS gun verisini aksam yayinliyor: saat 20'den once bugunun verisi
+    // henuz cikmamis olur, o yuzden beklenen son veri gunu dunku is gunudur.
+    const beklenen = new Date();
+    if (beklenen.getHours() < 20) beklenen.setDate(beklenen.getDate() - 1);
+    while (beklenen.getDay() === 0 || beklenen.getDay() === 6) {
+      beklenen.setDate(beklenen.getDate() - 1);
+    }
+    beklenen.setHours(0, 0, 0, 0);
+    let gerilik = 0;
+    const imlec = new Date(veriTarihi + "T00:00:00");
+    while (imlec < beklenen) {
+      imlec.setDate(imlec.getDate() + 1);
+      if (imlec.getDay() !== 0 && imlec.getDay() !== 6) gerilik++;
+    }
+    if (gerilik <= 0) {
+      el.className = "freshness ok";
+      el.textContent = "güncel";
+      el.title = "TEFAS'in yayinladigi en yeni islem gunu bu - daha yenisi yok.";
+    } else {
+      el.className = "freshness uyari";
+      el.textContent = gerilik + " is gunu geride";
+      el.title = "Beklenenden eski. Resmi tatil degilse tarama dusmus olabilir.";
+    }
+  }
 
   document.getElementById('run-date').textContent = RUN_DATE;
+  document.getElementById('run-ts').textContent = RUN_TS;
+  gosterTazelik(RUN_DATE);
   document.getElementById('rebalance-date').textContent = PORTFOLIO.length ? PORTFOLIO[0].rebalance_date : '—';
   document.getElementById('portfolio-size-note').textContent = PORTFOLIO.length || '—';
 
@@ -2263,7 +2358,8 @@ def write_fon_portfolio_page(portfolio_holdings, portfolio_history, run_date_str
             .replace("__PORTFOLIO_DATA__", portfolio_json)
             .replace("__PORTFOLIO_HISTORY__", history_json)
             .replace("__REBALANCE_DAYS__", str(FON_PORTFOLIO_REBALANCE_DAYS))
-            .replace("__RUN_DATE__", run_date_str))
+            .replace("__RUN_DATE__", run_date_str)
+            .replace("__RUN_TS__", simdi_damgasi()))
     output_path.write_text(html, encoding="utf-8")
     print(f"Model Portföy sayfası yazıldı: {output_path}")
 
@@ -2524,6 +2620,20 @@ def main():
     print(f"Tüm fonların {bas_tarih} - {run_date} arası zaman serisi çekiliyor (tek istek, biraz sürebilir)...")
     zaman_serisi, toplam_satir = fetch_tum_fonlar_zaman_serisi(bas_tarih, run_date)
     print(f"  -> {len(zaman_serisi)} fon, {toplam_satir} satır çekildi.\n")
+
+    # TEFAS'in yayinladigi son islem gunu takvim gunuyle ayni olmak zorunda
+    # degil: hafta sonu, resmi tatil, ya da aksam yayini cikmadan kosan sabah
+    # taramasi. Buraya kadar takvim gunu kullanildi (veri cekme penceresinin
+    # ucu olarak dogru); buradan sonrasi GERCEK veri gunune baglanir. Yoksa
+    # islem olmayan bir gune uydurma satir yaziliyor ve sayfa o gunun verisi
+    # varmis gibi gorunuyor - 19.09.2026'da tam bu oldu.
+    veri_tarihi = max((r["tarih"] for seri in zaman_serisi.values() for r in seri),
+                      default=run_date)
+    if veri_tarihi != run_date:
+        print(f"  not: TEFAS'in son veri günü {veri_tarihi} (bugün {run_date}) — "
+              f"rapor {veri_tarihi} üzerinden yazılıyor.\n")
+    run_date = veri_tarihi
+    run_date_str = run_date.isoformat()
 
     print("Metrikler hesaplanıyor...")
     ham_sonuclar = []
