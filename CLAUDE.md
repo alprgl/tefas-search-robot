@@ -55,12 +55,22 @@ Yazma: tek seferlik düzeltmeler, yazım hataları, geçici denemeler. Dosya
 launchd ile `~/Library/LaunchAgents/com.alpergul.fon-tarama.plist` üzerinden
 çalışır. **Şu an AÇIK.**
 
-`fon-tarama` hafta içi 09:30 ve 20:00'de `fon_model_portfoy.py`'yi çalıştırır;
+`fon-tarama` hafta içi **09:30, 20:00, 21:30 ve 23:00**'te
+`fon_model_portfoy.py`'yi çalıştırır;
 script kendi içinde `docs/`'u güncelleyip GitHub'a push eder, Pages birkaç
 dakikada tazelenir. **Neden kuruldu:** fon taraması uzun süre elle
 çalıştırılıyordu ve site fark edilmeden 4 gün bayatladı. İki kez
 çalıştırılmasının sebebi TEFAS'ın gün verisini akşam yayınlaması — akşamki
 koşu o günü yakalar, sabahki koşu akşam kaçırılmışsa telafi eder.
+
+**21:30 ve 23:00 yedek slotları (03.10.2026'da eklendi).** **Neden:** 20:00
+koşusunun düşmesinin baskın sebebi TEFAS değil, makinede ağ olmaması
+(`[Errno 8] nodename nor servname` = DNS çözülmedi; Mac uykuda ya da
+internetsiz). Retry bunu kurtaramıyor çünkü 5 deneme toplam ~45 saniyeye
+yayılıyor. Üç kez aynı şekilde gün kaybedildi: 17.09, 24.09, ve 01-02.10
+(site 2 işlem günü geride kaldı). Aynı gece iki ek deneme bu pencereyi büyük
+ölçüde kapatıyor. **Zararsız olmasının sebebi:** veri günü kontrolü sayesinde
+o günün verisi zaten varsa koşu "bu tarih zaten var" deyip geçiyor.
 **Dikkat:** bu servis `/opt/homebrew/bin/python3` kullanır (sistem
 python'unda `openpyxl` yok, Excel çıktısı orada patlar).
 
@@ -161,6 +171,27 @@ kalıyor.
 
 **Ders:** Bir veri kaynağı hatayı sessiz boş yanıtla bildiriyorsa, "istek
 başarılı döndü" hiçbir şey ifade etmez. Çıktının *boyutu* kontrol edilmeli.
+
+### Tuzak: 0 çıkış fiyatı pozisyonu sessizce yok ediyordu (03.10.2026)
+
+**Belirti:** Rebalance'ta kapanan 6 pozisyondan sadece 3'ü
+`fon_portfoy_gecmis.csv`'ye yazıldı. TMV, DOH, THF ne aktif sepette ne
+geçmişte kaldı — iz bırakmadan kayboldular. Kayıtlı ortalama (−%3,94) 6 değil
+3 fon üzerinden hesaplanmıştı.
+
+**Sebep:** TEFAS çıkış günü fiyatını bazen `0` dönüyor. Kapanış döngüsündeki
+koşul `if exit_price and h["entry_price"]:` idi ve Python'da **`0` falsy**,
+dolayısıyla pozisyon hiçbir uyarı vermeden atlanıyordu.
+
+**Çözüm (karar):** Pozisyon her hâlükârda geçmişe yazılıyor; geçerli çıkış
+fiyatı yoksa `exit_price` ve `getiri_pct` **boş** bırakılıyor ve log'a uyarı
+düşüyor. Uydurma getiri hesaplamaktansa "bilinmiyor" demek tercih edildi —
+boş getiri ortalamaya girmiyor ama pozisyon kayıtta görünüyor. Sayfa tarafı
+değişmedi: `fmtPct`/`fmtNum` zaten `null` için "—" basıyor. 02.10'da düşen üç
+pozisyon geçmişe geri eklendi.
+
+**Neden son geçerli fiyat kullanılmadı:** o fiyat gerçek çıkış fiyatı olmak
+zorunda değil ve raporlanan performansı sessizce değiştirirdi.
 
 ### Sayfadaki tazelik rozeti (19.09.2026)
 
