@@ -747,8 +747,14 @@ def append_fon_portfolio_history(records):
             writer.writerow(["giris_tarihi", "cikis_tarihi", "fonKodu", "fonUnvan",
                               "entry_price", "exit_price", "getiri_pct", "gun_sayisi"])
         for r in records:
+            # exit_price/getiri_pct None olabilir (cikis fiyati gecersiz): bos
+            # hucre yaziliyor, load tarafi bunu zaten None'a ceviriyor ve sayfa
+            # "—" gosteriyor.
             writer.writerow([r["giris_tarihi"], r["cikis_tarihi"], r["fonKodu"], r["fonUnvan"],
-                              r["entry_price"], r["exit_price"], f"{r['getiri_pct']:.2f}", r["gun_sayisi"]])
+                              r["entry_price"],
+                              r["exit_price"] if r["exit_price"] is not None else "",
+                              f"{r['getiri_pct']:.2f}" if r["getiri_pct"] is not None else "",
+                              r["gun_sayisi"]])
 
 
 def update_fon_model_portfolio(ham_sonuclar, run_date: date):
@@ -778,15 +784,28 @@ def update_fon_model_portfolio(ham_sonuclar, run_date: date):
             for h in existing:
                 guncel = fon_by_kod.get(h["fonKodu"])
                 exit_price = guncel.get("guncel_fiyat") if guncel else None
-                if exit_price and h["entry_price"]:
-                    getiri = (exit_price - h["entry_price"]) / h["entry_price"] * 100.0
-                    closed.append({
-                        "giris_tarihi": h["rebalance_date"], "cikis_tarihi": run_date_str,
-                        "fonKodu": h["fonKodu"], "fonUnvan": h["fonUnvan"],
-                        "entry_price": h["entry_price"], "exit_price": exit_price,
-                        "getiri_pct": getiri,
-                        "gun_sayisi": (run_date - date.fromisoformat(h["rebalance_date"])).days,
-                    })
+                if not h["entry_price"]:
+                    continue
+                # TEFAS cikis gunu fiyatini bazen 0 doneruyor (TMV/DOH/THF,
+                # 02.10.2026). Eski kosul "if exit_price and ..." idi ve 0 falsy
+                # oldugu icin pozisyonu SESSIZCE dusuruyordu: ne gecmise kayit
+                # ne uyari. Kapanan 6 pozisyondan 3'u boyle kayboldu ve kayitli
+                # ortalama eksik kaldi. Artik pozisyon her halukarda yaziliyor;
+                # gecerli cikis fiyati yoksa getiri BOS kaliyor - uydurma getiri
+                # hesaplamaktansa "bilinmiyor" demek dogru.
+                gecerli_cikis = exit_price is not None and exit_price > 0
+                if not gecerli_cikis:
+                    print(f"  [uyari] {h['fonKodu']}: cikis fiyati gecersiz "
+                          f"({exit_price}), getiri bos birakildi.")
+                closed.append({
+                    "giris_tarihi": h["rebalance_date"], "cikis_tarihi": run_date_str,
+                    "fonKodu": h["fonKodu"], "fonUnvan": h["fonUnvan"],
+                    "entry_price": h["entry_price"],
+                    "exit_price": exit_price if gecerli_cikis else None,
+                    "getiri_pct": ((exit_price - h["entry_price"]) / h["entry_price"] * 100.0
+                                   if gecerli_cikis else None),
+                    "gun_sayisi": (run_date - date.fromisoformat(h["rebalance_date"])).days,
+                })
             if closed:
                 append_fon_portfolio_history(closed)
 
