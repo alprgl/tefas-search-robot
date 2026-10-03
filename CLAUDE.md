@@ -127,6 +127,41 @@ ediyor — orası doğruydu — ama rapor, geçmiş CSV'leri ve sayfa gerçek ve
 gününe bağlanıyor. Takvim günüyle veri günü ayrıştığında koşu bunu log'a
 yazıyor ("TEFAS'ın son veri günü … — rapor … üzerinden yazılıyor").
 
+### Tuzak: boş veri sayfayı BOZDU, bayatlatmadı (03.10.2026) ⚠️ en ciddisi
+
+**Belirti:** `-> 0 fon, None satır çekildi`, ardından koşu sakin sakin devam
+edip `docs/fon.html`'i **2 MB'tan 43 KB'a** düşürdü, sıfır fonla yazdı ve
+**push etti**. Yayındaki site bayat değil bozuk hâle geldi.
+
+**Sebep — iki kat:**
+
+1. **TEFAS'ın aralık sınırı gün değil takvim ayı bazlı ve aşılınca hata değil
+   BOŞ LİSTE dönüyor.** (Bu zaten `backtest_fon.py` için biliniyordu, ama ana
+   script'te aynı tuzağa düşülmüş.) Kod sabit 31 gün geriye gidiyordu:
+   `LOOKBACK_DAYS(30) + FETCH_TAMPON_GUN(1)`. **Hata takvime bağlıydı** —
+   Ağustos 31 çektiği için 30.09'da 31 gün tam 1 ay ediyor ve çalışıyordu;
+   Eylül 30 çektiği için 03.10'da aynı 31 gün 1 ayı aştı. Şubat'ta çok daha
+   erken patlardı.
+2. **Boş veri kontrolü yoktu.** Asıl kusur bu: sınır hatası tek başına sadece
+   koşuyu düşürürdü, ama kontrol olmadığı için çöp veri ta yayına kadar gitti.
+
+**Ölçüm (03.10.2026, bit=2026-10-03):**
+
+| Pencere | Sonuç |
+|---|---|
+| 31 gün (09-02 →) | **0 fon** |
+| 30 gün (09-03 →) | 2046 fon ✅ |
+| 29/28/27 gün | 2046 fon ✅ |
+
+**Çözüm:** `bas_tarih = max(run_date - 31 gün, n_ay_once(run_date, 1))` —
+sınırın izin verdiği yerde tampon korunuyor, aşan yerde 1 takvim ayına
+kırpılıyor (6 sınır durumu doğrulandı). Ayrıca **boş seri artık koşuyu
+durduruyor**: sayfa hiç yazılmıyor, yayındaki son sağlıklı sürüm olduğu gibi
+kalıyor.
+
+**Ders:** Bir veri kaynağı hatayı sessiz boş yanıtla bildiriyorsa, "istek
+başarılı döndü" hiçbir şey ifade etmez. Çıktının *boyutu* kontrol edilmeli.
+
 ### Sayfadaki tazelik rozeti (19.09.2026)
 
 **Neden eklendi:** "Veri tarihi: 18.09" ekranda iki ayrı durumda birebir aynı
