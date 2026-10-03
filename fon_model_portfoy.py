@@ -2616,10 +2616,29 @@ def main():
     # gunluk haftasonu/tatil komsulugu) onceden onluyoruz - riski/volatiliteyi etkilemez,
     # cunku _pencere_risk_metrikleri zaten sadece hedef tarihten SONRAKI gunleri kullanir.
     FETCH_TAMPON_GUN = 1
-    bas_tarih = run_date - timedelta(days=LOOKBACK_DAYS + FETCH_TAMPON_GUN)
+    # TEFAS'in aralik siniri GUN degil TAKVIM AYI bazli: 1 ayi bir gun asinca
+    # API hata vermeden BOS LISTE donuyor. Sabit 31 gun bu yuzden takvime bagli
+    # bir bomba: Agustos 31 cektigi icin 30.09'da sorunsuz calisiyordu, ama
+    # Eylul 30 cektigi icin 03.10'da 1 ayi asip bos dondu ve sayfa sifir fonla
+    # yazildi. Subat'ta cok daha erken patlardi. Tampon artik 1 takvim ayinda
+    # kirpiliyor - sinirin izin verdigi yerde tampon korunuyor.
+    bas_tarih = max(run_date - timedelta(days=LOOKBACK_DAYS + FETCH_TAMPON_GUN),
+                    n_ay_once(run_date, 1))
     print(f"Tüm fonların {bas_tarih} - {run_date} arası zaman serisi çekiliyor (tek istek, biraz sürebilir)...")
     zaman_serisi, toplam_satir = fetch_tum_fonlar_zaman_serisi(bas_tarih, run_date)
     print(f"  -> {len(zaman_serisi)} fon, {toplam_satir} satır çekildi.\n")
+
+    # TEFAS bos listeyi HATA OLARAK DONDURMUYOR. Bu kontrol olmadan kosu sakin
+    # sakin devam edip sayfayi SIFIR fonla yazdi ve yayinladi (03.10.2026) -
+    # yani site bayat degil BOZUK hale geldi. Bos veriyle uretilen her sey
+    # coptur; burada durmak tek dogru davranis. Yayindaki son saglikli sayfa
+    # oldugu gibi kalir.
+    if not zaman_serisi:
+        raise RuntimeError(
+            f"TEFAS {bas_tarih} - {run_date} araligi icin bos liste dondu "
+            f"(hata vermeden). Aralik 1 takvim ayini asiyor olabilir. "
+            f"Sayfa YAZILMADI, yayindaki surum korundu."
+        )
 
     # TEFAS'in yayinladigi son islem gunu takvim gunuyle ayni olmak zorunda
     # degil: hafta sonu, resmi tatil, ya da aksam yayini cikmadan kosan sabah
